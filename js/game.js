@@ -34,6 +34,16 @@ addEventListener('keyup', e => {
 });
 addEventListener('blur', () => { for (const k in keys) { if (keys[k]) released[k] = true; keys[k] = false; } });
 
+// スマホの画面ボタンから呼ぶ(js/touch.js)
+let isTouch = false;
+function virtualKey(k, down) {
+  isTouch = true;
+  Sound.init();
+  if (down && !keys[k]) pressed[k] = true;
+  if (!down && keys[k]) released[k] = true;
+  keys[k] = down;
+}
+
 // ---------- 効果音(その場で合成) ----------
 const Sound = {
   ac: null,
@@ -704,9 +714,9 @@ function drawTitle() {
   sctx.drawImage(buf, 0, 0, VW * SCALE, VH * SCALE);
   const W = VW * SCALE;
   text('ブラスター・キッド', W / 2, 110, 64, '#f8b800');
-  if (Math.floor(frame / 30) % 2) text('Enter か Z でスタート', W / 2, 220, 30, '#fcfcfc');
-  text('← → いどう    Z / スペース ジャンプ    X うつ(おしっぱなしで れんしゃ)', W / 2, 500, 20, '#fcfcfc');
-  text('Enter ポーズ    ?ブロックや てきから でる アイテムで ぶきが かわるよ', W / 2, 535, 20, '#fcfcfc');
+  if (Math.floor(frame / 30) % 2) text(isTouch ? 'タップで スタート' : 'Enter か Z でスタート', W / 2, 220, 30, '#fcfcfc');
+  if (!isTouch) text('← → いどう    Z / スペース ジャンプ    X うつ(おしっぱなしで れんしゃ)', W / 2, 500, 20, '#fcfcfc');
+  text((isTouch ? '' : 'Enter ポーズ    ') + '?ブロックや てきから でる アイテムで ぶきが かわるよ', W / 2, 535, 20, '#fcfcfc');
 }
 
 function render() {
@@ -722,12 +732,12 @@ function render() {
   } else if (state === 'gameover') {
     sctx.fillStyle = 'rgba(0,0,0,0.6)'; sctx.fillRect(0, 0, W, H);
     text('ゲームオーバー', W / 2, H / 2 - 30, 60, '#fc7460');
-    if (stateTimer > 60) text('Enter で タイトルへ', W / 2, H / 2 + 50, 28, '#fcfcfc');
+    if (stateTimer > 60) text(isTouch ? 'タップで タイトルへ' : 'Enter で タイトルへ', W / 2, H / 2 + 50, 28, '#fcfcfc');
   } else if (state === 'clear') {
     sctx.fillStyle = 'rgba(0,0,0,0.45)'; sctx.fillRect(0, 0, W, H);
     text('ステージクリア!', W / 2, H / 2 - 50, 64, '#f8b800');
     text('SCORE ' + score, W / 2, H / 2 + 30, 32, '#fcfcfc');
-    if (stateTimer > 60) text('Enter で タイトルへ', W / 2, H / 2 + 90, 28, '#fcfcfc');
+    if (stateTimer > 60) text(isTouch ? 'タップで タイトルへ' : 'Enter で タイトルへ', W / 2, H / 2 + 90, 28, '#fcfcfc');
   }
 }
 
