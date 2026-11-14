@@ -92,6 +92,24 @@ const WALKER_TOP = [
   '...KRRRRRRRRK...',
   '....KKKKKKKK....',
 ];
+const BOSS_ROWS = [
+  '....KKKKKKKK....',
+  '...KOOOOOOOOK...',
+  '..KOOYYOOYYOOK..',
+  '..KOOYKOOYKOOK..',
+  '..KOOOOOOOOOOK..',
+  '..KOKKKKKKKKOK..',
+  '..KOKWKWKWKWOK..',
+  '...KKKKKKKKKK...',
+  '.KGGKOOOOOOKGGK.',
+  'KGGGKOOOOOOKGGGK',
+  'KGGKKOOOOOOKKGGK',
+  '.KK.KOOOOOOK.KK.',
+  '....KOOKKOOK....',
+  '...KGGK..KGGK...',
+  '..KGGGK..KGGGK..',
+  '..KKKKK..KKKKK..',
+];
 const ENEMY_SPR = {
   walker: [
     pair(WALKER_TOP.concat(['....KGK..KGK....', '...KGGK..KGGK...', '...KKKK..KKKK...', '................'])),
@@ -163,24 +181,7 @@ const ENEMY_SPR = {
     '.KggggggggggggK.',
     '.KKKKKKKKKKKKKK.',
   ])],
-  boss: [pair([
-    '....KKKKKKKK....',
-    '...KOOOOOOOOK...',
-    '..KOOYYOOYYOOK..',
-    '..KOOYKOOYKOOK..',
-    '..KOOOOOOOOOOK..',
-    '..KOKKKKKKKKOK..',
-    '..KOKWKWKWKWOK..',
-    '...KKKKKKKKKK...',
-    '.KGGKOOOOOOKGGK.',
-    'KGGGKOOOOOOKGGGK',
-    'KGGKKOOOOOOKKGGK',
-    '.KK.KOOOOOOK.KK.',
-    '....KOOKKOOK....',
-    '...KGGK..KGGK...',
-    '..KGGGK..KGGGK..',
-    '..KKKKK..KKKKK..',
-  ])],
+  boss: [pair(BOSS_ROWS)],
 };
 
 // ---- ブロック ----
@@ -291,3 +292,60 @@ const WEAPON_GLYPH = {
   heavy:  ['.....', 'WWWWW', 'WWWWW', 'WWWWW', '.....'],
   homing: ['..WW.', '....W', 'W...W', '.W.W.', '..W..'],
 };
+
+// 2面・3面のボスは色ちがい
+ENEMY_SPR.boss2 = [pair(BOSS_ROWS, { O: '#0070ec' })];
+ENEMY_SPR.boss3 = [pair(BOSS_ROWS, { O: '#9c44f0' })];
+
+// 面ごとの地面(上の色・上のふち・土・土の点)
+function makeGroundTiles(top, light, body, dot) {
+  const dots = (x, list) => list.forEach(([a, b]) => px(x, dot, a, b, 2, 1));
+  return {
+    dirt: makeTile(x => { px(x, body, 0, 0, 16, 16); dots(x, [[2, 3], [9, 1], [12, 8], [5, 10], [1, 13], [10, 13], [7, 6]]); }),
+    grass: makeTile(x => {
+      px(x, body, 0, 0, 16, 16); dots(x, [[2, 9], [9, 7], [12, 12], [5, 13], [7, 11]]);
+      px(x, top, 0, 0, 16, 4); px(x, light, 0, 0, 16, 1);
+      for (let i = 0; i < 16; i += 3) px(x, top, i, 4, 2, 1 + (i % 2));
+    }),
+  };
+}
+
+// トゲ(マスの下半分)
+const SPIKE_SPR = makeTile(x => {
+  for (let k = 0; k < 2; k++) {
+    const cx = k * 8 + 3;
+    for (let r = 0; r < 7; r++) {
+      const hw = Math.floor(r / 2);
+      px(x, '#000000', cx - hw - 1, 9 + r, hw * 2 + 3, 1);
+      px(x, '#e8e8e8', cx - hw, 9 + r, hw + 1, 1);
+      if (hw > 0) px(x, '#8c8c8c', cx + 1, 9 + r, hw, 1);
+    }
+  }
+  px(x, '#383838', 0, 15, 16, 1);
+});
+
+// 乗ると崩れる足場(ひび入り)
+const CRUMBLE_SPR = makeTile(x => {
+  px(x, '#000000', 0, 0, 16, 16);
+  px(x, '#c88c4c', 1, 1, 14, 14);
+  px(x, '#e8b878', 1, 1, 14, 1);
+  px(x, '#6c3c14', 1, 14, 14, 1);
+  [[4, 2, 1, 4], [5, 6, 1, 3], [6, 9, 2, 1], [11, 3, 1, 3], [10, 6, 1, 4], [3, 11, 3, 1], [12, 10, 1, 3]].forEach(([a, b, w, h]) => px(x, '#6c3c14', a, b, w, h));
+});
+
+// 近づくと落ちてくるトゲ岩
+const ROCK_SPR = makeSprite([
+  '..KKKKKKKKKKKK..',
+  '.KGGGGGGGGGGggK.',
+  'KGGWGGGGGGGGgggK',
+  'KGWGGGgGGGGGgggK',
+  'KGGGGGGGGgGGgggK',
+  'KGGgGGGGGGGGgggK',
+  'KGGGGGGGGGGGgggK',
+  '.KgGGGGGgGGgggK.',
+  '.KggggggggggggK.',
+  '..KWgKKWgKKWgK..',
+  '..KWgK.KWgK.KgK.',
+  '...KgK..KgK..K..',
+  '...KK....K......',
+]);

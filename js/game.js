@@ -88,6 +88,8 @@ const Sound = {
       case 'check': [659, 880].forEach((f, i) => this.tone(f, f, 0.12, 'square', 0.05, i * 0.1)); break;
       case 'dead': [600, 450, 300, 150].forEach((f, i) => this.tone(f, f * 0.9, 0.15, 'square', 0.06, i * 0.12)); break;
       case 'clear': [523, 523, 659, 784, 659, 784, 1047].forEach((f, i) => this.tone(f, f, 0.14, 'square', 0.06, i * 0.13)); break;
+      case 'fire': this.noise(0.35, 0.05); break;
+      case 'crumble': this.tone(160, 60, 0.15, 'triangle', 0.08); break;
       case 'boss': [196, 185, 175, 165].forEach((f, i) => this.tone(f, f, 0.2, 'sawtooth', 0.06, i * 0.2)); break;
     }
   },
@@ -105,7 +107,13 @@ const WEAPONS = {
 const WEAPON_IDS = Object.keys(WEAPONS);
 
 // ---------- 状態 ----------
-let state = 'title';   // title / play / pause / gameover / clear
+let state = 'title';   // title / play / pause / gameover / clear / allclear
+let stageIdx = 0, STG = STAGES[0], levelW = 0, arenaL = 0, stageStartScore = 0;
+let traps = [], crumbles = new Map(), trapClock = 0, selStage = 0;
+const SAVE_KEY = 'blasterkid.maxStage';
+function loadMaxStage() { try { return Math.min(STAGES.length - 1, parseInt(localStorage.getItem(SAVE_KEY) || '0', 10) || 0); } catch (e) { return 0; } }
+function saveMaxStage(n) { try { if (n > loadMaxStage()) localStorage.setItem(SAVE_KEY, String(Math.min(n, STAGES.length - 1))); } catch (e) { /* 保存できなくても遊べる */ } }
+let maxStage = loadMaxStage();
 let map, player, enemies, bullets, items, particles;
 let cam = { x: 0 }, shake = 0, frame = 0, stateTimer = 0;
 let lives, score, checkpointIdx, currentWeapon = 'normal';
@@ -116,11 +124,11 @@ const overlap = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h 
 
 // ---------- 地形 ----------
 function tileAt(tx, ty) {
-  if (tx < 0 || tx >= LEVEL_W) return T_METAL;
+  if (tx < 0 || tx >= levelW) return T_METAL;
   if (ty < 0 || ty >= LEVEL_H) return T_AIR;
   return map[ty][tx];
 }
-function solidAt(px, py) { return tileAt(Math.floor(px / TILE), Math.floor(py / TILE)) !== T_AIR; }
+function solidAt(px, py) { return isSolidTile(tileAt(Math.floor(px / TILE), Math.floor(py / TILE))); }
 function rectSolid(x, y, w, h) {
   for (let yy = y; ; yy += 8) {
     const cy = Math.min(yy, y + h - 0.01);
@@ -149,7 +157,7 @@ function moveEntity(e) {
   }
 }
 function groundTopY(tx) {
-  for (let ty = 0; ty < LEVEL_H; ty++) if (tileAt(tx, ty) !== T_AIR) return ty * TILE;
+  for (let ty = 0; ty < LEVEL_H; ty++) if (isSolidTile(tileAt(tx, ty))) return ty * TILE;
   return VH;
 }
 function openBox(tx, ty) {
@@ -160,24 +168,39 @@ function openBox(tx, ty) {
 }
 
 // ---------- 生成 ----------
-function newGame() {
-  map = buildMap();
-  lives = 3; score = 0; checkpointIdx = -1; currentWeapon = 'normal';
+function newGame(idx) {
+  lives = 3; score = 0; currentWeapon = 'normal';
+  startStage(idx);
+}
+function startStage(idx) {
+  stageIdx = idx; STG = STAGES[idx];
+  const b = makeBuilder(STG.w);
+  STG.build(b);
+  map = b.m; levelW = STG.w; arenaL = levelW - 20;
+  checkpointIdx = -1; stageStartScore = score; arenaLocked = false; crumbles = new Map();
   startFromCheckpoint();
+  banner = { text: 'ステージ' + (idx + 1) + '  ' + STG.name, color: '#fcfcfc', t: 150 };
   state = 'play';
 }
+function makeTraps() {
+  return STG.traps.map(t => t.type === 'flame'
+    ? { type: 'flame', x: t.x * TILE, base: groundTopY(t.x), period: 150, phase: t.phase || 0, on: false, warn: false }
+    : { type: 'rock', x: t.x * TILE + 1, y: TILE, w: 14, h: 14, vy: 0, state: 'hang', t: 0 });
+}
 function startFromCheckpoint() {
-  const sx = checkpointIdx < 0 ? 3 : CHECKPOINTS[checkpointIdx];
+  const sx = checkpointIdx < 0 ? 3 : STG.checkpoints[checkpointIdx];
   player = {
     x: sx * TILE + 3, y: groundTopY(sx) - 14, w: 10, h: 14, vx: 0, vy: 0,
     face: 1, hp: MAX_HP, inv: 60, knock: 0, cd: 0, charge: 0,
     coyote: 0, jumpBuf: 0, anim: 0, dead: false, onGround: false,
   };
-  enemies = ENEMY_SPAWNS.filter(s => s.x > sx + 4).map(makeEnemy);
+  enemies = STG.enemies.filter(s => s.x > sx + 4).map(makeEnemy);
   bullets = []; items = []; particles = [];
-  if (arenaLocked) for (let y = 0; y < 10; y++) map[y][ARENA_L] = T_AIR;
+  if (arenaLocked) for (let y = 0; y < 10; y++) map[y][arenaL] = T_AIR;
   arenaLocked = false; boss = null; bossDying = 0; banner = null;
-  cam.x = clamp(player.x - VW / 2, 0, LEVEL_W * TILE - VW);
+  for (const c of crumbles.values()) map[c.ty][c.tx] = T_CRUMBLE;
+  crumbles = new Map(); traps = makeTraps(); trapClock = 0;
+  cam.x = clamp(player.x - VW / 2, 0, levelW * TILE - VW);
 }
 
 const ETYPES = {
@@ -190,6 +213,9 @@ const ETYPES = {
 function makeEnemy(sp) {
   const T = ETYPES[sp.type];
   const e = Object.assign({ type: sp.type, vx: 0, vy: 0, t: 0, timer: 60, dir: -1, flash: 0, s: 1, active: false, dead: false }, T);
+  if (sp.type === 'boss') { e.hp = STG.boss.hp; if (stageIdx > 0) e.spr = 'boss' + (stageIdx + 1); }
+  else e.hp += STG.diff.ehp;
+  e.spd = STG.diff.spd;
   e.maxHp = e.hp;
   e.x = sp.x * TILE + (TILE - e.w) / 2;
   if (sp.type === 'flyer') { e.y = sp.row * TILE; e.baseY = e.y; }
@@ -272,7 +298,20 @@ function updatePlayer() {
   if (!keys.jump && p.vy < -2) p.vy = -2;   // ボタンを早く離すと低いジャンプ
   p.vy = Math.min(p.vy + GRAV, MAXFALL);
   moveEntity(p);
-  p.x = clamp(p.x, 0, LEVEL_W * TILE - p.w);
+  p.x = clamp(p.x, 0, levelW * TILE - p.w);
+
+  if (p.onGround) {
+    const ty = Math.floor((p.y + p.h + 1) / TILE);
+    for (const fx of [p.x + 1, p.x + p.w - 1]) {
+      const tx = Math.floor(fx / TILE), k = ty * levelW + tx;
+      if (tileAt(tx, ty) === T_CRUMBLE && !crumbles.has(k)) crumbles.set(k, { tx, ty, t: 0 });
+    }
+  }
+  const tx0 = Math.floor(p.x / TILE), tx1 = Math.floor((p.x + p.w - 0.01) / TILE);
+  const ty0 = Math.floor(p.y / TILE), ty1 = Math.floor((p.y + p.h - 0.01) / TILE);
+  for (let ty = ty0; ty <= ty1; ty++) for (let tx = tx0; tx <= tx1; tx++) {
+    if (tileAt(tx, ty) === T_SPIKE && overlap(p, { x: tx * TILE + 2, y: ty * TILE + 9, w: 12, h: 7 })) hurtPlayer(4);
+  }
 
   if (p.hitCeil) {
     const ty = Math.floor((p.y - 1) / TILE);
@@ -306,6 +345,11 @@ function damageEnemy(e, dmg) {
   if (e.type === 'boss' && e.state === 'enter') return;
   e.hp -= dmg; e.flash = 8;
   Sound.play('hit');
+  // ボスは体力が半分になったら回復を1つ落とす
+  if (e.type === 'boss' && !e.dropped && e.hp > 0 && e.hp <= e.maxHp / 2) {
+    e.dropped = true;
+    spawnItem((arenaL + 4) * TILE, 60, 'heal', false);
+  }
   if (e.hp <= 0) killEnemy(e);
 }
 function killEnemy(e) {
@@ -336,7 +380,7 @@ function updateEnemy(e) {
 
   switch (e.type) {
     case 'walker': {
-      e.vx = e.dir * 0.5;
+      e.vx = e.dir * 0.5 * e.spd;
       e.vy = Math.min(e.vy + GRAV, MAXFALL);
       moveEntity(e);
       if (e.hitWall) e.dir *= -1;
@@ -350,7 +394,7 @@ function updateEnemy(e) {
       e.vy = Math.min(e.vy + GRAV, MAXFALL);
       if (e.onGround) {
         e.vx = 0;
-        if (--e.timer <= 0) { e.vy = -4.6; e.vx = (Math.sign(p.x - e.x) || -1) * 1.1; e.timer = 70; }
+        if (--e.timer <= 0) { e.vy = -4.6; e.vx = (Math.sign(p.x - e.x) || -1) * 1.1 * e.spd; e.timer = Math.round(70 / e.spd); }
       }
       moveEntity(e);
       if (e.hitWall) e.vx = 0;
@@ -360,15 +404,15 @@ function updateEnemy(e) {
     case 'flyer': {
       const dx = p.x - e.x;
       e.dir = Math.sign(dx) || -1;
-      e.x += e.dir * 0.55;
+      e.x += e.dir * 0.55 * e.spd;
       e.y = e.baseY + Math.sin(e.t * 0.06) * 18;
       break;
     }
     case 'turret': {
       e.dir = Math.sign(p.x - e.x) || -1;
       if (--e.timer <= 0 && Math.abs(p.x - e.x) < 200 && !p.dead) {
-        enemyShot(cx, e.y + 6, aimAt(cx, e.y + 6), 1.6);
-        e.timer = 110;
+        enemyShot(cx, e.y + 6, aimAt(cx, e.y + 6), 1.6 * e.spd);
+        e.timer = STG.diff.turret;
       }
       break;
     }
@@ -381,7 +425,7 @@ function updateEnemy(e) {
 function updateBoss(e) {
   const p = player;
   e.vy = Math.min(e.vy + GRAV, MAXFALL);
-  const angry = e.hp <= e.maxHp / 2;
+  const angry = e.hp <= e.maxHp / 2, B = STG.boss;
   switch (e.state) {
     case 'enter': break;
     case 'idle':
@@ -389,8 +433,8 @@ function updateBoss(e) {
       e.dir = Math.sign(p.x + p.w / 2 - (e.x + e.w / 2)) || -1;
       if (--e.timer <= 0) {
         e.mode = (e.mode + 1) % 3;
-        if (e.mode === 1) { e.state = 'jump'; e.vy = -5.8; e.vx = e.dir * (angry ? 1.8 : 1.3); }
-        else { e.state = 'shoot'; e.timer = 10; e.shots = angry ? 3 : 2; }
+        if (e.mode === 1) { e.state = 'jump'; e.vy = -5.8; e.vx = e.dir * B.jumpVx * (angry ? 1.35 : 1); }
+        else { e.state = 'shoot'; e.timer = 10; e.shots = B.shots + (angry ? 1 : 0); }
       }
       break;
     case 'shoot':
@@ -398,10 +442,10 @@ function updateBoss(e) {
         if (e.shots > 0) {
           const sx = e.x + e.w / 2 + e.dir * 18, sy = e.y + 28;
           const a = aimAt(sx, sy);
-          for (const d of [-0.25, 0, 0.25]) enemyShot(sx, sy, a + d, 1.8, 3);
+          for (const d of B.spread) enemyShot(sx, sy, a + d, B.shotSpd, 3);
           Sound.play('shot');
           e.shots--; e.timer = 35;
-        } else { e.state = 'idle'; e.timer = angry ? 35 : 55; }
+        } else { e.state = 'idle'; e.timer = Math.round(B.idle * (angry ? 0.65 : 1)); }
       }
       break;
   }
@@ -409,7 +453,51 @@ function updateBoss(e) {
   if (e.hitWall) e.vx = 0;
   if (e.onGround && (e.state === 'enter' || e.state === 'jump')) {
     if (e.state === 'enter') Sound.play('boss');
+    // 3面のボスは着地すると地面を走る衝撃波を出す(ジャンプでよける)
+    if (B.wave && e.state === 'jump') {
+      for (const d of [-1, 1]) bullets.push({ x: e.x + e.w / 2 + d * 22, y: e.y + e.h - 7, vx: d * 2.2, vy: 0, w: 8, h: 14, dmg: 3, friendly: false, life: 200, color: '#c084fc', kind: 'wave' });
+    }
     e.state = 'idle'; e.timer = 50; shake = 12; Sound.play('big');
+  }
+}
+
+// ---------- 罠 ----------
+function updateTraps() {
+  trapClock++;
+  const p = player;
+  for (const tr of traps) {
+    if (tr.type === 'flame') {
+      const c = (trapClock + tr.phase) % tr.period;
+      tr.on = c >= tr.period - 50;
+      tr.warn = !tr.on && c >= tr.period - 80;
+      if (c === tr.period - 50 && Math.abs(tr.x - cam.x - VW / 2) < VW / 2 + 32) Sound.play('fire');
+      if (tr.on && !p.dead && overlap({ x: tr.x + 3, y: tr.base - 48, w: 10, h: 48 }, p)) hurtPlayer(4);
+    } else if (tr.state !== 'gone') {
+      if (tr.state === 'hang') {
+        if (!p.dead && Math.abs(p.x + p.w / 2 - (tr.x + 7)) < 40 && p.y > tr.y) { tr.state = 'shake'; tr.t = 0; }
+      } else if (tr.state === 'shake') {
+        if (++tr.t >= 24) tr.state = 'fall';
+      } else {
+        tr.vy = Math.min(tr.vy + 0.35, 7); tr.y += tr.vy;
+        if (solidAt(tr.x + 7, tr.y + tr.h) || tr.y > VH) {
+          burst(tr.x + 7, tr.y + tr.h, 10, ['#bcbcbc', '#7c7c7c', '#fcfcfc'], 2);
+          Sound.play('explode'); shake = 5; tr.state = 'gone';
+          continue;
+        }
+      }
+      if (!p.dead && overlap(tr, p)) hurtPlayer(5);
+    }
+  }
+  for (const [k, c] of crumbles) {
+    c.t++;
+    if (c.t === 30) {
+      map[c.ty][c.tx] = T_AIR;
+      burst(c.tx * TILE + 8, c.ty * TILE + 8, 8, ['#c88c4c', '#6c3c14'], 1.5);
+      Sound.play('crumble');
+    }
+    if (c.t >= 300 && !overlap({ x: c.tx * TILE, y: c.ty * TILE, w: TILE, h: TILE }, p)) {
+      map[c.ty][c.tx] = T_CRUMBLE; crumbles.delete(k);
+    }
   }
 }
 
@@ -494,22 +582,22 @@ function updateParticles() {
 
 // ---------- 進行 ----------
 function updateCamera() {
-  if (arenaLocked) cam.x += (ARENA_L * TILE - cam.x) * 0.15;
-  else cam.x = clamp(player.x + player.w / 2 - VW / 2, 0, LEVEL_W * TILE - VW);
+  if (arenaLocked) cam.x += (arenaL * TILE - cam.x) * 0.15;
+  else cam.x = clamp(player.x + player.w / 2 - VW / 2, 0, levelW * TILE - VW);
 }
 
 function checkProgress() {
-  CHECKPOINTS.forEach((cp, i) => {
+  STG.checkpoints.forEach((cp, i) => {
     if (i > checkpointIdx && !player.dead && player.x > cp * TILE) {
       checkpointIdx = i;
       Sound.play('check');
       banner = { text: 'チェックポイント!', color: '#58f898', t: 80 };
     }
   });
-  if (!arenaLocked && !player.dead && player.x > (ARENA_L + 2) * TILE) {
+  if (!arenaLocked && !player.dead && player.x > (arenaL + 2) * TILE) {
     arenaLocked = true;
-    for (let y = 0; y < 10; y++) map[y][ARENA_L] = T_METAL;
-    boss = makeEnemy({ type: 'boss', x: ARENA_L + 14 });
+    for (let y = 0; y < 10; y++) map[y][arenaL] = T_METAL;
+    boss = makeEnemy({ type: 'boss', x: arenaL + 14 });
     boss.y = -60; boss.state = 'enter'; boss.mode = 0; boss.active = true;
     enemies.push(boss);
     banner = { text: 'ボスがあらわれた!', color: '#fc7460', t: 100 };
@@ -519,18 +607,25 @@ function checkProgress() {
 function update() {
   frame++;
   if (state === 'title') {
-    if (pressed.start || pressed.jump || pressed.shoot) newGame();
+    if (pressed.left) selStage = Math.max(0, selStage - 1);
+    if (pressed.right) selStage = Math.min(maxStage, selStage + 1);
+    if (pressed.start || pressed.jump || pressed.shoot) newGame(selStage);
     return;
   }
-  if (state === 'gameover' || state === 'clear') {
+  if (state === 'gameover' || state === 'clear' || state === 'allclear') {
     stateTimer++;
-    if (stateTimer > 60 && (pressed.start || pressed.jump)) state = 'title';
+    if (stateTimer > 60 && (pressed.start || pressed.jump)) {
+      if (state === 'clear') { lives = Math.max(lives, 3); startStage(stageIdx + 1); }
+      else if (state === 'gameover') { lives = 3; score = stageStartScore; startStage(stageIdx); }
+      else { selStage = maxStage; state = 'title'; }
+    }
     return;
   }
   if (state === 'pause') { if (pressed.start) state = 'play'; return; }
   if (pressed.start && !player.dead) { state = 'pause'; return; }
 
   updatePlayer();
+  updateTraps();
   for (const e of enemies) if (!e.dead) updateEnemy(e);
   enemies = enemies.filter(e => !e.dead);
   updateBullets();
@@ -551,23 +646,35 @@ function update() {
       burst(boss.x + Math.random() * boss.w, boss.y + Math.random() * boss.h, 10, ['#fcfcfc', '#f8b800', '#e45c10'], 2.5);
       Sound.play('explode'); shake = 6;
     }
-    if (bossDying === 0) { state = 'clear'; stateTimer = 0; Sound.play('clear'); }
+    if (bossDying === 0) {
+      saveMaxStage(stageIdx + 1); maxStage = loadMaxStage();
+      state = stageIdx === STAGES.length - 1 ? 'allclear' : 'clear'; stateTimer = 0; Sound.play('clear');
+    }
   }
 }
 
 // ---------- 描画 ----------
-function drawBackground(camX) {
-  ctx.fillStyle = '#5c94fc'; ctx.fillRect(0, 0, VW, VH);
+function drawBackground(camX, theme = STG.theme) {
+  ctx.fillStyle = theme.sky; ctx.fillRect(0, 0, VW, VH);
+  if (theme.stars) {
+    for (let i = 0; i < 40; i++) {
+      const x = (((i * 97) % 420) - camX * 0.05 + 420 * 4) % 420 - 50, y = (i * 53) % 110 + 4;
+      ctx.fillStyle = (i + Math.floor(frame / 20)) % 7 ? '#fcfcfc' : '#606080';
+      ctx.fillRect(Math.floor(x), y, 1, 1);
+    }
+    ctx.fillStyle = '#fcf8c0'; ctx.beginPath(); ctx.arc(250 - camX * 0.02 % 40, 34, 12, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = theme.sky; ctx.beginPath(); ctx.arc(256 - camX * 0.02 % 40, 30, 11, 0, Math.PI * 2); ctx.fill();
+  }
   const tile = (img, par, y) => {
     const off = -Math.floor(camX * par) % img.width;
     for (let x = off; x < VW; x += img.width) ctx.drawImage(img, x, y);
   };
-  [[-10, 20], [120, 40], [230, 14], [330, 34]].forEach(([cx, cy]) => {
+  if (theme.clouds) [[-10, 20], [120, 40], [230, 14], [330, 34]].forEach(([cx, cy]) => {
     const x = ((cx - camX * 0.2) % 420 + 420) % 420 - 50;
     ctx.drawImage(CLOUD_SPR, Math.floor(x), cy);
   });
-  tile(HILLS_FAR, 0.25, VH - 32 - 80);
-  tile(HILLS_NEAR, 0.5, VH - 32 - 56);
+  tile(theme.far, 0.25, VH - 32 - 80);
+  tile(theme.near, 0.5, VH - 32 - 56);
 }
 
 function drawTiles(camX) {
@@ -575,21 +682,24 @@ function drawTiles(camX) {
   for (let ty = 0; ty < LEVEL_H; ty++) {
     for (let tx = t0; tx <= t1; tx++) {
       const t = tileAt(tx, ty);
-      if (t === T_AIR || tx >= LEVEL_W) continue;
+      if (t === T_AIR || tx >= levelW) continue;
       let img;
-      if (t === T_GROUND) img = tileAt(tx, ty - 1) === T_AIR ? TILE_SPR.grass : TILE_SPR.dirt;
+      let ox = 0;
+      if (t === T_GROUND) img = isSolidTile(tileAt(tx, ty - 1)) ? STG.theme.tiles.dirt : STG.theme.tiles.grass;
+      else if (t === T_SPIKE) img = SPIKE_SPR;
+      else if (t === T_CRUMBLE) { img = CRUMBLE_SPR; if (crumbles.has(ty * levelW + tx)) ox = frame % 4 < 2 ? -1 : 1; }
       else if (t === T_BRICK) img = TILE_SPR.brick;
       else if (t === T_METAL) img = TILE_SPR.metal;
       else if (t === T_BOX) img = TILE_SPR.box;
       else img = TILE_SPR.usedBox;
       const y = t === T_BOX ? ty * TILE + (Math.floor(frame / 20) % 2 ? -1 : 0) : ty * TILE;
-      ctx.drawImage(img, tx * TILE - camX, y);
+      ctx.drawImage(img, tx * TILE - camX + ox, y);
     }
   }
 }
 
 function drawFlags(camX) {
-  CHECKPOINTS.forEach((cp, i) => {
+  STG.checkpoints.forEach((cp, i) => {
     const x = cp * TILE - camX + 7, top = groundTopY(cp);
     if (x < -16 || x > VW + 16) return;
     ctx.fillStyle = '#fcfcfc'; ctx.fillRect(x, top - 40, 2, 40);
@@ -621,7 +731,7 @@ function drawItem(it, camX) {
 
 function drawEnemy(e, camX) {
   if (e.flash > 0 && Math.floor(frame / 2) % 2) return;
-  const frames = ENEMY_SPR[e.type];
+  const frames = ENEMY_SPR[e.spr || e.type];
   const f = frames[Math.floor(e.t / 12) % frames.length];
   const img = e.dir > 0 ? f.r : f.l;
   const s = e.s;
@@ -648,6 +758,9 @@ function drawBullet(b, camX) {
     const r = 8 + (Math.floor(frame / 3) % 2);
     ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = '#fcfcfc'; ctx.beginPath(); ctx.arc(x, y, r - 4, 0, Math.PI * 2); ctx.fill();
+  } else if (b.kind === 'wave') {
+    ctx.fillRect(x - b.w / 2, y - b.h / 2 + (frame % 4 < 2 ? 0 : 2), b.w, b.h);
+    ctx.fillStyle = '#fcfcfc'; ctx.fillRect(x - 1, y - b.h / 2 + 3, 2, b.h - 4);
   } else if (b.kind === 'beam') {
     ctx.fillRect(x - b.w / 2, y - b.h / 2, b.w, b.h);
     ctx.fillStyle = '#fcfcfc'; ctx.fillRect(x - b.w / 2 + 2, y - 2, b.w - 4, 4);
@@ -668,10 +781,34 @@ function drawBar(x, y, val, max, color) {
   }
 }
 
+function drawTraps(camX) {
+  for (const tr of traps) {
+    const x = tr.x - camX;
+    if (x < -24 || x > VW + 24) continue;
+    if (tr.type === 'flame') {
+      ctx.fillStyle = '#000'; ctx.fillRect(x + 1, tr.base - 5, 14, 5);
+      ctx.fillStyle = '#7c7c7c'; ctx.fillRect(x + 2, tr.base - 4, 12, 3);
+      ctx.fillStyle = '#383838'; ctx.fillRect(x + 6, tr.base - 4, 4, 2);
+      if (tr.warn && frame % 6 < 3) { ctx.fillStyle = '#f8b800'; ctx.fillRect(x + 6, tr.base - 8, 2, 2); ctx.fillRect(x + 9, tr.base - 10, 2, 2); }
+      if (tr.on) {
+        const j = frame % 6 < 3 ? 0 : 3;
+        ctx.fillStyle = '#e45c10'; ctx.fillRect(x + 3, tr.base - 48 + j, 10, 44 - j);
+        ctx.fillStyle = '#f8b800'; ctx.fillRect(x + 5, tr.base - 40 + j, 6, 36 - j);
+        ctx.fillStyle = '#fcfcfc'; ctx.fillRect(x + 7, tr.base - 24, 2, 20);
+      }
+    } else if (tr.state !== 'gone') {
+      if (tr.state !== 'fall') { ctx.fillStyle = '#7c7c7c'; ctx.fillRect(x + 6, 0, 2, tr.y); }
+      const jx = tr.state === 'shake' ? (frame % 4 < 2 ? -1 : 1) : 0;
+      ctx.drawImage(ROCK_SPR, Math.round(x - 1 + jx), Math.round(tr.y - 1));
+    }
+  }
+}
+
 function drawWorld() {
   const camX = Math.round(cam.x) + (shake > 0 ? Math.round((Math.random() - 0.5) * 4) : 0);
   drawBackground(camX);
   drawTiles(camX);
+  drawTraps(camX);
   drawFlags(camX);
   for (const it of items) drawItem(it, camX);
   for (const e of enemies) drawEnemy(e, camX);
@@ -699,11 +836,12 @@ function drawHud() {
   text('ぶき: ' + WEAPONS[currentWeapon].name, 52, 30, 22, WEAPONS[currentWeapon].color, 'left');
   text('のこり ' + Math.max(0, lives), 52, 60, 18, '#fcfcfc', 'left');
   text('SCORE ' + String(score).padStart(6, '0'), W - 70, 30, 20, '#fcfcfc', 'right');
+  text('ステージ ' + (stageIdx + 1), W / 2, 30, 20, '#fcfcfc');
   if (banner) text(banner.text, W / 2, 110, 34, banner.color);
 }
 
 function drawTitle() {
-  drawBackground(frame * 0.5);
+  drawBackground(frame * 0.5, THEMES.grass);
   for (let tx = 0; tx < VW / TILE + 1; tx++) {
     ctx.drawImage(TILE_SPR.grass, tx * TILE, 160);
     ctx.drawImage(TILE_SPR.dirt, tx * TILE, 176);
@@ -715,6 +853,7 @@ function drawTitle() {
   const W = VW * SCALE;
   text('ブラスター・キッド', W / 2, 110, 64, '#f8b800');
   if (Math.floor(frame / 30) % 2) text(isTouch ? 'タップで スタート' : 'Enter か Z でスタート', W / 2, 220, 30, '#fcfcfc');
+  if (maxStage > 0) text((selStage > 0 ? '◀ ' : '　 ') + 'ステージ ' + (selStage + 1) + ' ' + STAGES[selStage].name + (selStage < maxStage ? ' ▶' : '　 '), W / 2, 280, 28, '#f8b800');
   if (!isTouch) text('← → いどう    Z / スペース ジャンプ    X うつ(おしっぱなしで れんしゃ)', W / 2, 500, 20, '#fcfcfc');
   text((isTouch ? '' : 'Enter ポーズ    ') + '?ブロックや てきから でる アイテムで ぶきが かわるよ', W / 2, 535, 20, '#fcfcfc');
 }
@@ -732,12 +871,17 @@ function render() {
   } else if (state === 'gameover') {
     sctx.fillStyle = 'rgba(0,0,0,0.6)'; sctx.fillRect(0, 0, W, H);
     text('ゲームオーバー', W / 2, H / 2 - 30, 60, '#fc7460');
-    if (stateTimer > 60) text(isTouch ? 'タップで タイトルへ' : 'Enter で タイトルへ', W / 2, H / 2 + 50, 28, '#fcfcfc');
+    if (stateTimer > 60) text((isTouch ? 'タップで' : 'Enter で') + ' ステージ' + (stageIdx + 1) + 'の さいしょから', W / 2, H / 2 + 50, 28, '#fcfcfc');
   } else if (state === 'clear') {
     sctx.fillStyle = 'rgba(0,0,0,0.45)'; sctx.fillRect(0, 0, W, H);
-    text('ステージクリア!', W / 2, H / 2 - 50, 64, '#f8b800');
+    text('ステージ' + (stageIdx + 1) + ' クリア!', W / 2, H / 2 - 50, 64, '#f8b800');
     text('SCORE ' + score, W / 2, H / 2 + 30, 32, '#fcfcfc');
-    if (stateTimer > 60) text(isTouch ? 'タップで タイトルへ' : 'Enter で タイトルへ', W / 2, H / 2 + 90, 28, '#fcfcfc');
+    if (stateTimer > 60) text((isTouch ? 'タップで' : 'Enter で') + ' つぎの ステージへ', W / 2, H / 2 + 90, 28, '#fcfcfc');
+  } else if (state === 'allclear') {
+    sctx.fillStyle = 'rgba(0,0,0,0.55)'; sctx.fillRect(0, 0, W, H);
+    text('ぜんぶ クリア!', W / 2, H / 2 - 70, 68, '#f8b800');
+    text('おめでとう!  SCORE ' + score, W / 2, H / 2 + 10, 34, '#fcfcfc');
+    if (stateTimer > 60) text(isTouch ? 'タップで タイトルへ' : 'Enter で タイトルへ', W / 2, H / 2 + 80, 28, '#fcfcfc');
   }
 }
 
@@ -758,4 +902,4 @@ function loop(now) {
 requestAnimationFrame(loop);
 
 // 動作確認用
-window.__game = { get state() { return state; }, get player() { return player; }, get enemies() { return enemies; }, get cam() { return cam; }, setWeapon(w) { currentWeapon = w; }, get weapon() { return currentWeapon; } };
+window.__game = { get state() { return state; }, get player() { return player; }, get enemies() { return enemies; }, get cam() { return cam; }, setWeapon(w) { currentWeapon = w; }, start(i) { lives = 3; score = 0; startStage(i); }, get stage() { return stageIdx; }, get lives() { return lives; }, get traps() { return traps; }, warp(tx) { player.x = tx * TILE + 3; player.y = groundTopY(tx) - 14; player.vy = 0; }, get boss() { return boss; }, get weapon() { return currentWeapon; } };
