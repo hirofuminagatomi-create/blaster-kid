@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>ブラスター・キッド</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #111; }
+  body { display: flex; align-items: center; justify-content: center; }
+  #screen {
+    width: min(100vw, calc(100vh * 960 / 576));
+    aspect-ratio: 960 / 576;
+    image-rendering: pixelated;
+    background: #000;
+  }
+</style>
+</head>
+<body>
+<canvas id="screen"></canvas>
+<script src="js/sprites.js"></script>
+<script src="js/level.js"></script>
+<script src="js/game.js"></script>
+</body>
+</html>
